@@ -80,6 +80,7 @@ python bot.py -url "https://www.twitch.tv/arsenlarsen7392" -headless -min-interv
 - `-users-dir` или `--users-dir` — папка с профилями пользователей (по умолчанию `users`)
 - `-min-interval` или `--min-interval` — минимальный интервал между сообщениями в секундах (по умолчанию 20)
 - `-max-interval` или `--max-interval` — максимальный интервал между сообщениями в секундах (по умолчанию 120)
+- `-autofollow` или `--autofollow` — автоматически нажимает на кнопку "Отслеживать" (follow) при загрузке канала
 
 ### Примеры запуска:
 
@@ -96,6 +97,16 @@ python bot.py -url "https://www.twitch.tv/somechannel" -headless -min-interval 1
 **С одинарным дефисом (тоже работает):**
 ```powershell
 python bot.py -url "https://www.twitch.tv/somechannel"
+```
+
+**С автоматическим follow:**
+```powershell
+python bot.py -url "https://www.twitch.tv/somechannel" -autofollow
+```
+
+**Комбинированный пример (фоновый режим с автоматическим follow и быстрыми сообщениями):**
+```powershell
+python bot.py -url "https://www.twitch.tv/somechannel" -headless -autofollow -min-interval 15 -max-interval 45
 ```
 
 ## Как работает бот

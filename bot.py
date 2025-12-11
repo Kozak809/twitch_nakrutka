@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("-users-dir", "--users-dir", default="users", help="Directory containing user cookie files")
     parser.add_argument("-min-interval", "--min-interval", type=int, default=20, help="Minimum seconds between messages")
     parser.add_argument("-max-interval", "--max-interval", type=int, default=120, help="Maximum seconds between messages")
+    parser.add_argument("-autofollow", "--autofollow", action="store_true", help="Automatically click the follow button")
     return parser.parse_args()
 
 
@@ -66,8 +67,13 @@ def save_user_cookies(user_file: Path, cookies: dict):
 def get_all_cookies_from_driver(driver: webdriver.Chrome) -> dict:
     """Extract all cookies from driver as dict"""
     cookies = {}
-    for cookie in driver.get_cookies():
-        cookies[cookie['name']] = cookie['value']
+    try:
+        for cookie in driver.get_cookies():
+            cookies[cookie['name']] = cookie['value']
+    except Exception as e:
+        # Driver may be disconnected, return empty dict
+        print(f"Warning: Could not retrieve cookies from driver: {e}")
+        return {}
     return cookies
 
 
@@ -102,12 +108,53 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--lang=ru-RU,ru")
+    # Memory optimization arguments
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-plugins")
+    options.add_argument("--disable-images")
+    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-client-side-phishing-detection")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-hang-monitor")
+    options.add_argument("--disable-popup-blocking")
+    options.add_argument("--disable-prompt-on-repost")
+    options.add_argument("--disable-sync")
+    options.add_argument("--metrics-recording-only")
+    options.add_argument("--mute-audio")
+    options.add_argument("--no-first-run")
+    options.add_argument("--safebrowsing-disable-auto-update")
+    options.add_argument("--enable-automation")
+    # Limit memory usage
+    options.add_argument("--memory-pressure-off")
+    # Anti-detection options
+    options.add_argument("--disable-web-resources")
+    options.add_argument("--disable-component-extensions-with-background-pages")
     options.add_experimental_option("excludeSwitches", ["enable-automation"]) 
     options.add_experimental_option('useAutomationExtension', False)
+    options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    # Spoof user agent and navigator properties
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
 
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     driver.set_window_size(1200, 900)
+    
+    # Inject JavaScript to hide automation indicators
+    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+        "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false,
+            });
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['ru-RU', 'ru'],
+            });
+        """
+    })
+    
     return driver
 
 
@@ -147,6 +194,74 @@ def accept_consent_if_present(driver: webdriver.Chrome, timeout: int = 5):
         ).click()
     except Exception:
         pass
+
+
+def simulate_human_behavior(driver: webdriver.Chrome):
+    """Simulate human-like behavior to avoid bot detection"""
+    try:
+        # Random mouse movements and scrolling
+        driver.execute_script("""
+            // Simulate random scroll
+            window.scrollBy(0, Math.random() * 100 - 50);
+            
+            // Simulate random mouse movement (visual only, doesn't affect clicks)
+            const event = new MouseEvent('mousemove', {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                clientX: Math.random() * window.innerWidth,
+                clientY: Math.random() * window.innerHeight
+            });
+            document.dispatchEvent(event);
+        """)
+        time.sleep(random.uniform(0.5, 1.5))
+    except:
+        pass
+
+
+def click_follow_button(driver: webdriver.Chrome, timeout: int = 10):
+    """Click the follow button if it exists and is visible"""
+    try:
+        # Simulate human behavior before clicking
+        simulate_human_behavior(driver)
+        time.sleep(random.uniform(1, 2))
+        
+        # Try to find the follow button using data-test-selector
+        follow_button = WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-test-selector='follow-button']"))
+        )
+        
+        # Get the button text before clicking to verify it changes
+        button_text_before = follow_button.text
+        print(f"Button text before: {button_text_before}")
+        
+        # Scroll to button if needed
+        driver.execute_script("arguments[0].scrollIntoView(true);", follow_button)
+        time.sleep(random.uniform(0.5, 1.5))
+        
+        # Simulate more human behavior
+        simulate_human_behavior(driver)
+        time.sleep(random.uniform(0.5, 1))
+        
+        # Use regular click instead of JavaScript to make it more natural
+        follow_button.click()
+        
+        print("Follow button clicked successfully")
+        
+        # Wait longer for follow action to complete and register with Twitch
+        time.sleep(random.uniform(4, 7))
+        
+        # Verify button state changed
+        try:
+            button_text_after = follow_button.text
+            print(f"Button text after: {button_text_after}")
+        except:
+            pass
+        
+        return True
+    except Exception as e:
+        print(f"Follow button not found or already followed: {e}")
+        return False
 
 
 def accept_chat_rules_if_present(driver: webdriver.Chrome, timeout: int = 10):
@@ -217,6 +332,57 @@ def accept_chat_rules_if_present(driver: webdriver.Chrome, timeout: int = 10):
         pass
 
 
+def is_driver_alive(driver: webdriver.Chrome) -> bool:
+    """Check if driver is still connected and responsive"""
+    try:
+        # Use a simple check with timeout
+        import threading
+        result = [False]
+        
+        def check():
+            try:
+                _ = driver.current_url
+                result[0] = True
+            except:
+                result[0] = False
+        
+        thread = threading.Thread(target=check, daemon=True)
+        thread.start()
+        thread.join(timeout=2)  # 2 second timeout
+        
+        return result[0]
+    except Exception:
+        return False
+
+
+def cleanup_memory(driver: webdriver.Chrome):
+    """Clean up browser memory by removing old chat messages and logs"""
+    try:
+        if not is_driver_alive(driver):
+            return False
+        # Execute JavaScript to clear console logs and remove old DOM elements
+        driver.execute_script("""
+            // Clear console
+            console.clear();
+            
+            // Remove old chat messages (keep only recent ones)
+            const chatMessages = document.querySelectorAll('[data-a-target="chat-message-container"]');
+            if (chatMessages.length > 100) {
+                for (let i = 0; i < chatMessages.length - 50; i++) {
+                    chatMessages[i].remove();
+                }
+            }
+            
+            // Clear unused resources
+            if (window.gc) {
+                window.gc();
+            }
+        """)
+        return True
+    except Exception as e:
+        return False  # Silently ignore if cleanup fails
+
+
 def send_chat_message(driver: webdriver.Chrome, message: str):
     # Find the actual editor div with the correct class
     chat_input = WebDriverWait(driver, 20).until(
@@ -252,7 +418,7 @@ def send_chat_message(driver: webdriver.Chrome, message: str):
 
 
 def worker(user_file: Path, channel_url: str, greetings: list[str], phrases: list[str], 
-           headless: bool, min_interval: int, max_interval: int, delay: int = 0):
+           headless: bool, min_interval: int, max_interval: int, delay: int = 0, autofollow: bool = False):
     """Worker process that runs indefinitely, sending messages at random intervals"""
     # Add small delay to stagger browser launches
     if delay > 0:
@@ -284,9 +450,18 @@ def worker(user_file: Path, channel_url: str, greetings: list[str], phrases: lis
         driver.get(channel_url)
         accept_consent_if_present(driver, timeout=5)
         
-        # Wait for chat to load
+        # Wait for chat to load first
         print(f"[{proc_name}] Waiting for chat to load...")
         wait_for_chat_ready(driver)
+        time.sleep(2)
+        
+        # Click follow button if autofollow is enabled (after chat is ready)
+        if autofollow:
+            print(f"[{proc_name}] Attempting to follow channel...")
+            click_follow_button(driver, timeout=10)
+            # Wait much longer after following to ensure Twitch registers it properly
+            print(f"[{proc_name}] Waiting for follow to be registered...")
+            time.sleep(random.uniform(8, 12))
         
         # Handle initial modal if present
         try:
@@ -299,12 +474,20 @@ def worker(user_file: Path, channel_url: str, greetings: list[str], phrases: lis
         except Exception as e:
             print(f"[{proc_name}] Error during initial setup: {e}")
         
+        # Final stabilization wait
+        time.sleep(2)
+        
         print(f"[{proc_name}] Starting infinite message loop (interval: {min_interval}-{max_interval}s)...")
         message_count = 0
         
         # Infinite loop - send messages until manually stopped
         while True:
             try:
+                # Check if driver is still alive
+                if not is_driver_alive(driver):
+                    print(f"[{proc_name}] Driver connection lost, stopping bot")
+                    break
+                
                 # First message is a greeting, then use regular phrases
                 if message_count == 0:
                     message = random.choice(greetings)
@@ -317,13 +500,20 @@ def worker(user_file: Path, channel_url: str, greetings: list[str], phrases: lis
                 
                 send_chat_message(driver, message)
                 
-                # Save cookies after each message to prevent data loss
-                try:
-                    updated_cookies = get_all_cookies_from_driver(driver)
-                    save_user_cookies(user_file, updated_cookies)
-                    print(f"[{proc_name}] Cookies auto-saved ({len(updated_cookies)} cookies)")
-                except Exception as e:
-                    print(f"[{proc_name}] Warning: Could not auto-save cookies: {e}")
+                # Save cookies every 5 messages instead of every message (reduces disk I/O)
+                if message_count % 5 == 0:
+                    try:
+                        updated_cookies = get_all_cookies_from_driver(driver)
+                        if updated_cookies:  # Only save if we got cookies
+                            save_user_cookies(user_file, updated_cookies)
+                            print(f"[{proc_name}] Cookies auto-saved ({len(updated_cookies)} cookies)")
+                    except Exception as e:
+                        print(f"[{proc_name}] Warning: Could not auto-save cookies: {e}")
+                
+                # Clean up memory every 10 messages
+                if message_count % 10 == 0:
+                    if cleanup_memory(driver):
+                        print(f"[{proc_name}] Memory cleanup performed")
                 
                 # Random interval between messages
                 interval = random.randint(min_interval, max_interval)
@@ -335,6 +525,10 @@ def worker(user_file: Path, channel_url: str, greetings: list[str], phrases: lis
                 break
             except Exception as e:
                 print(f"[{proc_name}] Error during message sending: {e}")
+                # Check if driver is still alive before retrying
+                if not is_driver_alive(driver):
+                    print(f"[{proc_name}] Driver disconnected, stopping bot")
+                    break
                 print(f"[{proc_name}] Waiting 30s before retry...")
                 time.sleep(30)
                 
@@ -346,10 +540,14 @@ def worker(user_file: Path, channel_url: str, greetings: list[str], phrases: lis
         if driver:
             # Save cookies first, before closing driver
             try:
-                print(f"[{proc_name}] Saving updated cookies to {user_file.name}...")
-                updated_cookies = get_all_cookies_from_driver(driver)
-                save_user_cookies(user_file, updated_cookies)
-                print(f"[{proc_name}] Cookies saved successfully ({len(updated_cookies)} cookies)")
+                if is_driver_alive(driver):
+                    print(f"[{proc_name}] Saving updated cookies to {user_file.name}...")
+                    updated_cookies = get_all_cookies_from_driver(driver)
+                    if updated_cookies:
+                        save_user_cookies(user_file, updated_cookies)
+                        print(f"[{proc_name}] Cookies saved successfully ({len(updated_cookies)} cookies)")
+                else:
+                    print(f"[{proc_name}] Driver already disconnected, skipping cookie save")
             except Exception as e:
                 print(f"[{proc_name}] Warning: Could not save cookies: {e}")
             
@@ -405,7 +603,7 @@ def main():
             p = Process(
                 target=worker, 
                 args=(user_file, args.url, greetings, phrases, args.headless, 
-                      args.min_interval, args.max_interval, delay)
+                      args.min_interval, args.max_interval, delay, args.autofollow)
             )
             p.daemon = False
             p.start()
